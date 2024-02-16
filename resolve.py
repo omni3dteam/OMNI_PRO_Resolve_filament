@@ -5,7 +5,7 @@ import json
 import linecache
 from enum import IntEnum, Enum
 from pathlib import Path
-import os, stat
+import os, stat, glob
 # Python dsf API
 from dsf.connections import InterceptConnection, InterceptionMode
 from dsf.commands.code import CodeType
@@ -22,55 +22,64 @@ file_path = "/opt/dsf/sd/gcodes/"
 # Connect to dsf socket
 command_connection = CommandConnection(debug=False)
 command_connection.connect()
-# simple wrapper class for returning tool name as string
-# class tool_name(str, Enum):
-#     TOOL_0 = "Left Extruder Spool 0",
-#     TOOL_1 = "Right Extruder Spool 0",
-#     TOOL_2 = "Left Extruder Spool 1",
-#     TOOL_3 = "Right Extruder Spool 1"
-#     def return_tool_name(tool):
-#         if tool == 0:
-#             return tool_name.TOOL_0
-#         elif tool == 1:
-#              return tool_name.TOOL_1
-#         elif tool == 2:
-#              return tool_name.TOOL_2
-#         elif tool == 3:
-#              return tool_name.TOOL_3
 # function to return neighbouring tool number from tool number
+def return_tools_as_string(tools):
+    string_tools = [0,0]
+    for tool in tools:
+        if tool == 0:
+            string_tools[tool] = "T0"
+        elif tool == 1:
+            string_tools[tool] = "T1"
+        elif tool == 2:
+            string_tools[tool] = "T2"
+        elif tool == 3:
+            string_tools[tool] = "T3"
+    return string_tools
+
 def return_neighbour_tool(tool):
     if tool > 1:
         return tool - 2
     else:
         return tool + 2
-# function to return drives corresponding to tool number
-# def return_drives(tool):
-#     if tool == 0:
-#         return [0,2]
-#     elif tool == 1:
-#         return [1,4]
-#     elif tool == 2:
-#         return [0,3]
-#     elif tool == 3:
-#         return [1,5]
+def get_data_from_gcode(file_path):
+    data = []
+    with open(file_path) as f:
+        lines = f.readlines()
+        for line in lines:
+            arr = line.split(',')
+            if arr[0] == ";   autoConfigureMaterial":
+                arr.pop(0)
+                for material in arr:
+                     data.append(material.rstrip())
+            elif arr[0] == ";   autoConfigureExtruders":
+                arr.pop(0)
+                if arr[0].rstrip() == "Both Extruders (HIPS-20)":
+                    data.append(0)
+                    data.append(1)
+                else:
+                    data.append(0)
+                break
+    return data
 # TODO Design algorithm to resolve filament <-> tool relation at the start of print
-def resolve_filament(job_original_toolheads):
+def resolve_filament(gcode_data):
+    job_original_toolheads = [gcode_data[-2], gcode_data[-1]]
+    job_materials = [gcode_data[0], gcode_data[1]]
     # Get tray states
     res = command_connection.perform_simple_code("M1102")
     tray_state = json.loads(res)
-    tools_tray_array = [tray_state['Tool_0'], tray_state['Tool_1'], tray_state['Tool_2'], tray_state['Tool_3']]
-    # Get RFID states
-    tools_rfid_array = []
-    for i in range (0,4):
-        res = command_connection.perform_simple_code("M1002 S{}".format(i))
-        rfid_data = json.loads(res)
-        tools_rfid_array.append(rfid_data)
+    tools_tray_array = [tray_state['T0'], tray_state['T1'], tray_state['T2'], tray_state['T3']]
+    # Get current filaments loaded
+    # tools_rfid_array = []
+    # for i in range (0,4):
+    #     res = command_connection.perform_simple_code("M1002 S{}".format(i))
+    #     rfid_data = json.loads(res)
+    #     tools_rfid_array.append(rfid_data)
     # All data gathered, now try to resolve tool number
     new_tools = [0,0]
     tool_iterator = 0
     for tool in job_original_toolheads:
-    ## First check if selected tool have proper any filament present
-        if tools_tray_array[tool] == 1:
+    ## First check if selected tool have proper or any filament present
+        if tools_tray_array[tool] == 2:
             # i.e we have filament present
             ## for now just pass same tool number. later TODO: check material, colour and amount left
             new_tools[tool_iterator] = tool
@@ -83,35 +92,61 @@ def resolve_filament(job_original_toolheads):
                 print("No filament present for tool{}".format(tool))
                 new_tools[tool_iterator] = tool
         tool_iterator += 1
-    return new_tools
+    return return_tools_as_string(new_tools)
 
-# def change_drives(job_original_toolheads, new_toolheads):
-#     new_tool_it = 0
-#     for tool in job_original_toolheads:
-#         # M563 P0 S"Left Extruder Spool 0" D0:2 H0 F0             ; define tool 0
-#         drives_to_write = return_drives(new_toolheads[new_tool_it])
-#         m563 = """M563 P{} S"{}" D{}:{} H{} F{}""".format(tool, tool_name.return_tool_name(tool) ,drives_to_write[0], drives_to_write[1], tool, tool)
-#         res = command_connection.perform_simple_code(m563)
-#         res = command_connection.perform_simple_code("M567 P{} E1.0:1.05".format(tool))
-#         res = command_connection.perform_simple_code("G10 P{} R0 S0".format(tool))
-#         print(m563)
-#         new_tool_it += 1
-class lines_to_read(IntEnum):
-    Material = 9,
-    tool_head_number = 13
+def create_full_file_path(file_path, filename):
+    try:
+        f = filename.split('/')
+        f.pop(0)
+        f.pop(0)
+        filename_with_subdirs = ""
+        for folder in f:
+            filename_with_subdirs = filename_with_subdirs + folder
+            filename_with_subdirs = filename_with_subdirs + "/"
+        filename_with_subdirs = filename_with_subdirs[:-1]
+        full_filename = (file_path + f[-1].split('.')[0] + ".gcode")
+        return full_filename
+    except Exception as e:
+        print(e)
+        return ""
 
 def modify_job_file(file_path, filename, tool_to_change, new_tool):
     try:
-        # Create copy of job file
-        f = filename.split('.')
-        tmp_filename = f[0] + "_tmp." + f[1]
-        # Path(file_path + tmp_filename).touch()
-        os.system('cp {}{} {}{}'.format(file_path, filename, file_path, tmp_filename))
-        # file.write_text(file.read_text().replace('T0', 'T1'))
+        f = filename.split('/')
+        f.pop(0)
+        f.pop(0)
+        filename_with_subdirs = ""
+        for folder in f:
+            filename_with_subdirs = filename_with_subdirs + folder
+            filename_with_subdirs = filename_with_subdirs + "/"
+        filename_with_subdirs = filename_with_subdirs[:-1]
+
+        tmp_filename = "tmp/" + f[-1].split('.')[0] + "_tmp.gcode"
+        # tmp_filename = tmp_filename.replace(" ", "_")
+        # filename_with_subdirs = filename_with_subdirs.replace(" ", "_")
+        # file_path = file_path.replace(" ", "_")
+
+        message = 'sudo cp {} {}'.format((file_path + filename_with_subdirs).replace(" ", "\ "), file_path + tmp_filename.replace(" ", "\ "))
+        full_filename = (file_path + tmp_filename)
+
+        os.system(message)
         # Grant ourself write permission
-        os.chmod(file_path + tmp_filename, (stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO))
-        file = Path(file_path + filename)
-        file.write_text(file.read_text().replace(tool_to_change, new_tool))
+        full_filename = (file_path + tmp_filename)
+        os.system("sudo chmod 777 " + full_filename.replace(" ", "\ "))
+        # os.chmod(full_filename, (stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO))
+        # Read in the file
+        filedata = None
+        new_tool_it =  0
+        for tool in tool_to_change:
+            with open(full_filename, 'r') as file :
+                filedata = file.read()
+            # Replace the target string
+                filedata = filedata.replace(tool, new_tool[new_tool_it])
+            # Write the file out again
+            with open(full_filename, 'w') as file :
+                file.write(filedata)
+            # f.write_text(tmp_filename.read_text().replace(tool_to_change, new_tool))
+            new_tool_it += 1
         return tmp_filename
     except Exception as e:
         print(e)
@@ -125,19 +160,15 @@ def intercept_start_print_request():
         cde = intercept_connection.receive_code()
         # Tray 0 command handling:
         if cde.type == CodeType.MCode and cde.majorNumber == 32:
-            filename = cde.parameters[0].string_value
-            file_path = "/opt/dsf/sd/gcodes/"
-            new_file = modify_job_file(file_path, filename, "T0", "T1")
-            # # Open file and get tool head number and material
-            # job_original_toolheads = [int(linecache.getline(file_path+filename, lines_to_read.tool_head_number).split(',',3)[1]), int(linecache.getline(file_path+filename, lines_to_read.tool_head_number).split(',',3)[2])]
-            # job_materials = [str(linecache.getline(file_path+filename, lines_to_read.Material).split(',',3)[1]).rstrip(), str(linecache.getline(file_path+filename, lines_to_read.tool_head_number).split(',',3)[2]).rstrip()]
-            # new_toolheads = resolve_filament(job_original_toolheads)
-            # file.write_text(file.read_text().replace('T0', 'T1'))
-            # material = linecache.getline(file_path, lines_to_read.Material).split(',', 3)[1]
-            # print(material)
-            #intercept_connection.ignore_code()
             intercept_connection.resolve_code(MessageType.Success)
-            return new_file
+            filename = cde.parameters[0].string_value
+            folder_path = "/opt/dsf/sd/gcodes/"
+            file_path = create_full_file_path(folder_path, filename)
+            gcode_data = get_data_from_gcode(file_path)
+            original_tools = return_tools_as_string([gcode_data[1], gcode_data[2]])
+            new_tools = resolve_filament(gcode_data)
+            new_file = modify_job_file(folder_path, filename, original_tools, new_tools)
+            return new_file, new_tools
     except Exception as e:
         print("Closing connection: ", e)
         intercept_connection.resolve_code(MessageType.Success)
@@ -147,11 +178,40 @@ if __name__ == "__main__":
     #Configure everything on entry
     subscribe_connection = SubscribeConnection(SubscriptionMode.FULL)
     subscribe_connection.connect()
+    previous_file = "none"
+    tool_Value = ""
+    os.system("sudo rm -rf /opt/dsf/sd/gcodes/tmp")
+    os.system("mkdir /opt/dsf/sd/gcodes/tmp")
+    os.system("sudo chown -R dsf:dsf /opt/dsf/sd/gcodes")
+    os.system("sudo chmod 777 /opt/dsf/sd/gcodes/tmp")
     while(True):
         # Wait for M32 to be sendt
-        new_file = intercept_start_print_request()
-        time.sleep(5)
-        message = "M32 {}".format(new_file)
+        new_file, new_tools = intercept_start_print_request()
+        if previous_file != new_file:
+            os.system('rm {}{}'.format(file_path, previous_file.replace(" ", "\ ")))
+        # Before we start print, check if we loaded filamnents.
+        filament_status = command_connection.perform_simple_code("M1102")
+        tool_state = json.loads(filament_status)[new_tools[0]]
+
+        # for tool in new_tools:
+        #     # Filament present
+        #     if json.loads(filament_status)[tool] == 0:
+        #         pass
+        #     # Filament not present
+        #     elif json.loads(filament_status)[tool] == 1:
+        #         pass
+        #     # filament loaded
+        #     elif json.loads(filament_status)[tool] == 2:
+        #         tool_numeric_value = [int(i) for i in tool if i.isdigit()]
+        #         message = "M1101 P{} S1".format(tool_numeric_value[0])
+        #         command_connection.perform_simple_code(message)
+        #         time.sleep(30)
+        #         pass
+        #     # filament primed
+        #     elif json.loads(filament_status)[tool] == 3:
+        #         pass
+
+        message = "M32 "'"{}"'"".format(new_file)
         res = command_connection.perform_simple_code(message)
         time.sleep(5)
         status = 'processing'
@@ -159,6 +219,19 @@ if __name__ == "__main__":
         while status != 'idle':
             status = command_connection.perform_simple_code("""M409 K"'state.status"'""")
             status = json.loads(status)["result"]
-            time.sleep(5)
-        # Delete temporary copy and end loop
-        os.system('rm {}{}'.format(file_path, new_file))
+            tool = command_connection.perform_simple_code("T")
+            tool = tool.split(" ")
+            if tool[0] != "No":
+                tool_Value = tool[1]
+            else:
+                pass
+            time.sleep(1)
+        # Retract filament
+        # if tool_Value != "No tool is selected":
+        #     print(tool_Value[:1])
+        #     command_connection.perform_simple_code("M1101 P{} S2".format(tool_Value[:1]))
+        # Allow use of print again button
+        # command_connection.perform_simple_code("G28 XY")
+        command_connection.perform_simple_code("M0")
+        command_connection.perform_simple_code("M98 P""'/sys/stop.g'""")
+        previous_file = new_file
