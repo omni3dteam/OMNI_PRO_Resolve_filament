@@ -24,25 +24,27 @@ command_connection = CommandConnection(debug=False)
 command_connection.connect()
 # function to return neighbouring tool number from tool number
 def return_tools_as_string(tools):
-    string_tools = [0,0]
-    for tool in tools:
-        if tool == 0:
-            string_tools[tool] = "T0"
-        elif tool == 1:
-            string_tools[tool] = "T1"
-        elif tool == 2:
-            string_tools[tool] = "T2"
-        elif tool == 3:
-            string_tools[tool] = "T3"
+    string_tools = []
+    for i in range(0, len(tools)):
+        if tools[i] == 0:
+            string_tools.append("T0")
+        elif tools[i] == 1:
+            string_tools.append("T1")
+        elif tools[i] == 2:
+            string_tools.append("T2")
+        elif tools[i] == 3:
+            string_tools.append("T3")
     return string_tools
-
+# function to return neighbouring tool
 def return_neighbour_tool(tool):
     if tool > 1:
         return tool - 2
     else:
         return tool + 2
+# function used to return meta data parsed from gcode file
 def get_data_from_gcode(file_path):
-    data = []
+    extruders_data = []
+    material_data = []
     with open(file_path) as f:
         lines = f.readlines()
         for line in lines:
@@ -50,20 +52,21 @@ def get_data_from_gcode(file_path):
             if arr[0] == ";   autoConfigureMaterial":
                 arr.pop(0)
                 for material in arr:
-                     data.append(material.rstrip())
+                     material_data.append(material.rstrip())
             elif arr[0] == ";   autoConfigureExtruders":
                 arr.pop(0)
                 if arr[0].rstrip() == "Both Extruders (HIPS-20)":
-                    data.append(0)
-                    data.append(1)
+                    extruders_data.append(0)
+                    extruders_data.append(1)
+                    material_data.append("HIPS-20")
                 else:
-                    data.append(0)
+                    extruders_data.append(0)
                 break
-    return data
+    return extruders_data, material_data
 # TODO Design algorithm to resolve filament <-> tool relation at the start of print
-def resolve_filament(gcode_data):
-    job_original_toolheads = [gcode_data[-2], gcode_data[-1]]
-    job_materials = [gcode_data[0], gcode_data[1]]
+def resolve_filament(original_tools, materials):
+    job_original_toolheads = original_tools
+    job_materials = materials
     # Get tray states
     res = command_connection.perform_simple_code("M1102")
     tray_state = json.loads(res)
@@ -145,7 +148,6 @@ def modify_job_file(file_path, filename, tool_to_change, new_tool):
             # Write the file out again
             with open(full_filename, 'w') as file :
                 file.write(filedata)
-            # f.write_text(tmp_filename.read_text().replace(tool_to_change, new_tool))
             new_tool_it += 1
         return tmp_filename
     except Exception as e:
@@ -164,10 +166,11 @@ def intercept_start_print_request():
             filename = cde.parameters[0].string_value
             folder_path = "/opt/dsf/sd/gcodes/"
             file_path = create_full_file_path(folder_path, filename)
-            gcode_data = get_data_from_gcode(file_path)
-            original_tools = return_tools_as_string([gcode_data[1], gcode_data[2]])
-            new_tools = resolve_filament(gcode_data)
-            new_file = modify_job_file(folder_path, filename, original_tools, new_tools)
+            original_tools, materials = get_data_from_gcode(file_path)
+            new_tools = resolve_filament(original_tools, materials)
+            # new_tools = ["T0", "T2"]
+            new_file = modify_job_file(folder_path, filename, return_tools_as_string(original_tools), new_tools)
+            intercept_connection.close()
             return new_file, new_tools
     except Exception as e:
         print("Closing connection: ", e)
@@ -184,11 +187,15 @@ if __name__ == "__main__":
     os.system("mkdir /opt/dsf/sd/gcodes/tmp")
     os.system("sudo chown -R dsf:dsf /opt/dsf/sd/gcodes")
     os.system("sudo chmod 777 /opt/dsf/sd/gcodes/tmp")
+
+    res = command_connection.perform_simple_code("G28 XY")
+
     while(True):
         # Wait for M32 to be sendt
         new_file, new_tools = intercept_start_print_request()
         if previous_file != new_file:
-            os.system('rm {}{}'.format(file_path, previous_file.replace(" ", "\ ")))
+            pass
+            # os.system('rm {}{}'.format(file_path, previous_file.replace(" ", "\ ")))
         # Before we start print, check if we loaded filamnents.
         filament_status = command_connection.perform_simple_code("M1102")
         tool_state = json.loads(filament_status)[new_tools[0]]
