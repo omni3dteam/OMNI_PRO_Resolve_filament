@@ -9,7 +9,7 @@ import os, stat, glob
 # Python dsf API
 from dsf.connections import InterceptConnection, InterceptionMode
 from dsf.commands.code import CodeType
-from dsf.object_model import MessageType
+from dsf.object_model import MessageType, LogLevel
 from dsf.connections import CommandConnection
 from dsf.connections import SubscribeConnection, SubscriptionMode
 ##################################### Abstarct ###########################################
@@ -42,26 +42,80 @@ def return_neighbour_tool(tool):
     else:
         return tool + 2
 # function used to return meta data parsed from gcode file
-def get_data_from_gcode(file_path):
+def get_data_from_cura_gcode(file_path):
     extruders_data = []
     material_data = []
-    with open(file_path) as f:
+    try:
+        with open(file_path) as f:
+            lines = f.readlines()
+            counter = 0
+            for line in lines:
+                arr = line.split(':')
+                if arr[0].rstrip() == ";Filament used":
+                    arr.pop(0)
+                    arr = arr[0].split(',')
+                    second_extruder = float(arr[1].rstrip()[:-1])
+                    if second_extruder > 0:
+                        extruders_data.append(0)
+                        extruders_data.append(1)
+                        material_data.append("Default")
+                        material_data.append("Default")
+                    else:
+                        extruders_data.append(0)
+                        material_data("Default")
+                    break
+                elif counter > 500:
+                   return [-1,-1], [-1,-1]
+                counter  = counter + 1
+    except Exception as e:
+        print(e)
+    return extruders_data, material_data
+def get_data_from_gcode(file_path):
+     with open(file_path) as f:
         lines = f.readlines()
-        for line in lines:
-            arr = line.split(',')
-            if arr[0] == ";   autoConfigureMaterial":
-                arr.pop(0)
-                for material in arr:
-                     material_data.append(material.rstrip())
-            elif arr[0] == ";   autoConfigureExtruders":
-                arr.pop(0)
-                if arr[0].rstrip() == "Both Extruders (HIPS-20)":
-                    extruders_data.append(0)
-                    extruders_data.append(1)
-                    material_data.append("HIPS-20")
+        if lines[0] == ";FLAVOR:RepRap\n":
+            return get_data_from_cura_gcode(file_path)
+        else:
+            return get_data_from_default_slicer(file_path)
+
+def get_data_from_default_slicer(file_path):
+    extruders_data = []
+    material_data = []
+    try:
+        line_counter = 0
+        with open(file_path) as f:
+            lines = f.readlines()
+            for line in lines:
+                if line == "; thumbnail end\n":
+                    break
                 else:
-                    extruders_data.append(0)
-                break
+                    line_counter += 1
+
+        with open(file_path) as f:
+            lines = f.readlines()
+            lines = lines[line_counter:]
+            counter = 0
+            for line in lines:
+                arr = line.split(',')
+                if arr[0].rstrip() == ";   autoConfigureMaterial":
+                    arr.pop(0)
+                    for material in arr:
+                         material_data.append(material.rstrip())
+                elif arr[0].rstrip() == ";   autoConfigureExtruders":
+                    arr.pop(0)
+                    if arr[0].rstrip() == "Both Extruders (HIPS-20)":
+                        extruders_data.append(0)
+                        extruders_data.append(1)
+                        material_data.append("HIPS-20")
+                    else:
+                        extruders_data.append(0)
+                    break
+                elif counter > 500:
+                   res = command_connection.write_message(MessageType.Error, "Wrong slicer version please use slicer version >= 5.1", True, LogLevel.Warn)
+                   return [-1,-1], [-1,-1]
+                counter  = counter + 1
+    except Exception as e:
+        print(e)
     return extruders_data, material_data
 # TODO Design algorithm to resolve filament <-> tool relation at the start of print
 def resolve_filament(original_tools, materials):
@@ -78,7 +132,7 @@ def resolve_filament(original_tools, materials):
     #     rfid_data = json.loads(res)
     #     tools_rfid_array.append(rfid_data)
     # All data gathered, now try to resolve tool number
-    new_tools = [0,0]
+    new_tools = [-1,-1]
     tool_iterator = 0
     for tool in job_original_toolheads:
     ## First check if selected tool have proper or any filament present
@@ -89,8 +143,8 @@ def resolve_filament(original_tools, materials):
         else:
         # check if filament is present on other tool
             neighbour_tool = return_neighbour_tool(tool)
-            if  tools_tray_array[neighbour_tool] == 1:
-                new_tools[tool_iterator] = tool
+            if  (tools_tray_array[neighbour_tool] == 3) or (tools_tray_array[neighbour_tool] == 2):
+                new_tools[tool_iterator] = neighbour_tool
             else:
                 print("No filament present for tool{}".format(tool))
                 new_tools[tool_iterator] = tool
@@ -108,6 +162,7 @@ def create_full_file_path(file_path, filename):
             filename_with_subdirs = filename_with_subdirs + "/"
         filename_with_subdirs = filename_with_subdirs[:-1]
         full_filename = (file_path + f[-1].split('.')[0] + ".gcode")
+        full_filename = (file_path + filename_with_subdirs)
         return full_filename
     except Exception as e:
         print(e)
@@ -124,7 +179,7 @@ def modify_job_file(file_path, filename, tool_to_change, new_tool):
             filename_with_subdirs = filename_with_subdirs + "/"
         filename_with_subdirs = filename_with_subdirs[:-1]
 
-        tmp_filename = "tmp/" + f[-1].split('.')[0] + "_tmp.gcode"
+        tmp_filename = "tmp/" + f[-1].split('.')[0] + ".gcode"
         # tmp_filename = tmp_filename.replace(" ", "_")
         # filename_with_subdirs = filename_with_subdirs.replace(" ", "_")
         # file_path = file_path.replace(" ", "_")
@@ -152,6 +207,14 @@ def modify_job_file(file_path, filename, tool_to_change, new_tool):
         return tmp_filename
     except Exception as e:
         print(e)
+def is_it_print_again_file(file_path):
+    f = file_path.split('/')
+    if f[-1].endswith('.gcode'):
+        f[-1] = f[-1][:-6]
+    if f[-1].find("_tmp") != -1:
+        return True
+    else:
+        return False
 
 def intercept_start_print_request():
     filters = ["M32"]
@@ -167,6 +230,8 @@ def intercept_start_print_request():
             folder_path = "/opt/dsf/sd/gcodes/"
             file_path = create_full_file_path(folder_path, filename)
             original_tools, materials = get_data_from_gcode(file_path)
+            if original_tools[0] == -1:
+                return "", [-1,-1]
             new_tools = resolve_filament(original_tools, materials)
             # new_tools = ["T0", "T2"]
             new_file = modify_job_file(folder_path, filename, return_tools_as_string(original_tools), new_tools)
@@ -188,57 +253,69 @@ if __name__ == "__main__":
     os.system("sudo chown -R dsf:dsf /opt/dsf/sd/gcodes")
     os.system("sudo chmod 777 /opt/dsf/sd/gcodes/tmp")
 
-    res = command_connection.perform_simple_code("G28 XY")
+    # res = command_connection.perform_simple_code("G28 XY")
+    # command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t0.g"'"")
 
     while(True):
         # Wait for M32 to be sendt
         new_file, new_tools = intercept_start_print_request()
-        if previous_file != new_file:
-            pass
-            # os.system('rm {}{}'.format(file_path, previous_file.replace(" ", "\ ")))
-        # Before we start print, check if we loaded filamnents.
-        filament_status = command_connection.perform_simple_code("M1102")
-        tool_state = json.loads(filament_status)[new_tools[0]]
+        if new_file != "":
+            # Before we start print, check if we loaded filamnents.
+            filament_status = command_connection.perform_simple_code("M1102")
+            tool_state = json.loads(filament_status)[new_tools[0]]
 
-        # for tool in new_tools:
-        #     # Filament present
-        #     if json.loads(filament_status)[tool] == 0:
-        #         pass
-        #     # Filament not present
-        #     elif json.loads(filament_status)[tool] == 1:
-        #         pass
-        #     # filament loaded
-        #     elif json.loads(filament_status)[tool] == 2:
-        #         tool_numeric_value = [int(i) for i in tool if i.isdigit()]
-        #         message = "M1101 P{} S1".format(tool_numeric_value[0])
-        #         command_connection.perform_simple_code(message)
-        #         time.sleep(30)
-        #         pass
-        #     # filament primed
-        #     elif json.loads(filament_status)[tool] == 3:
-        #         pass
+            continue_print = False
 
-        message = "M32 "'"{}"'"".format(new_file)
-        res = command_connection.perform_simple_code(message)
-        time.sleep(5)
-        status = 'processing'
-        # Wait for print to finish
-        while status != 'idle':
-            status = command_connection.perform_simple_code("""M409 K"'state.status"'""")
-            status = json.loads(status)["result"]
-            tool = command_connection.perform_simple_code("T")
-            tool = tool.split(" ")
-            if tool[0] != "No":
-                tool_Value = tool[1]
-            else:
-                pass
-            time.sleep(1)
-        # Retract filament
-        # if tool_Value != "No tool is selected":
-        #     print(tool_Value[:1])
-        #     command_connection.perform_simple_code("M1101 P{} S2".format(tool_Value[:1]))
-        # Allow use of print again button
-        # command_connection.perform_simple_code("G28 XY")
-        command_connection.perform_simple_code("M0")
-        command_connection.perform_simple_code("M98 P""'/sys/stop.g'""")
-        previous_file = new_file
+            for tool in new_tools:
+                # Filament present
+                if json.loads(filament_status)[tool] == 0:
+                    res = command_connection.write_message(MessageType.Error, "No filament needed to print", True, LogLevel.Warn)
+                    continue_print = False
+                # Filament not present
+                elif json.loads(filament_status)[tool] == 1:
+                    res = command_connection.write_message(MessageType.Error, "No filament needed to print", True, LogLevel.Warn)
+                    continue_print = False
+                # filament loaded
+                elif json.loads(filament_status)[tool] == 2:
+                    tool_numeric_value = [int(i) for i in tool if i.isdigit()]
+                    message = "M1101 P{} S1".format(tool_numeric_value[0])
+                    command_connection.perform_simple_code(message)
+                    time.sleep(30)
+                    continue_print = True
+                    pass
+                # filament primed
+                elif json.loads(filament_status)[tool] == 3:
+                    continue_print = True
+                    pass
+
+
+            if continue_print == True:
+                message = "M32 "'"{}"'"".format(new_file)
+                res = command_connection.perform_simple_code(message)
+                time.sleep(5)
+                status = 'processing'
+                # Wait for print to finish
+                while status != 'idle':
+                    status = command_connection.perform_simple_code("""M409 K"'state.status"'""")
+                    status = json.loads(status)["result"]
+                    tool = command_connection.perform_simple_code("T")
+                    tool = tool.split(" ")
+                    if tool[0] != "No":
+                        tool_Value = tool[1]
+                    else:
+                        pass
+                    time.sleep(1)
+
+                command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t0.g"'"")
+                command_connection.perform_simple_code("T0")
+                command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/clean.g"'"")
+
+                command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t1.g"'"")
+                command_connection.perform_simple_code("T1")
+                command_connection.perform_simple_code("M98 P"'" /sys/machine-specific/clean.g"'"")
+
+                command_connection.perform_simple_code("M42 P9  S0")
+                command_connection.perform_simple_code("M42 P10 S0")
+                command_connection.perform_simple_code("M42 P11 S0")
+
+
