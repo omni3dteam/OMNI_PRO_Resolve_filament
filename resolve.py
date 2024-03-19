@@ -62,7 +62,7 @@ def get_data_from_cura_gcode(file_path):
                         material_data.append("Default")
                     else:
                         extruders_data.append(0)
-                        material_data("Default")
+                        material_data.append("Default")
                     break
                 elif counter > 500:
                    return [-1,-1], [-1,-1]
@@ -136,7 +136,7 @@ def resolve_filament(original_tools, materials):
     tool_iterator = 0
     for tool in job_original_toolheads:
     ## First check if selected tool have proper or any filament present
-        if tools_tray_array[tool] == 2:
+        if (tools_tray_array[tool] == 2) or (tools_tray_array[tool] == 3):
             # i.e we have filament present
             ## for now just pass same tool number. later TODO: check material, colour and amount left
             new_tools[tool_iterator] = tool
@@ -305,17 +305,19 @@ if __name__ == "__main__":
                     else:
                         pass
                     time.sleep(1)
-
-                command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t0.g"'"")
-                command_connection.perform_simple_code("T0")
+                command_connection.perform_simple_code("T1")
+                command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t1.g"'"")
                 command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/clean.g"'"")
 
-                command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t1.g"'"")
-                command_connection.perform_simple_code("T1")
+                command_connection.perform_simple_code("T0")
+                command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t0.g"'"")
                 command_connection.perform_simple_code("M98 P"'" /sys/machine-specific/clean.g"'"")
 
                 command_connection.perform_simple_code("M42 P9  S0")
                 command_connection.perform_simple_code("M42 P10 S0")
                 command_connection.perform_simple_code("M42 P11 S0")
+
+                command_connection.perform_simple_code("""M98 P"'/sys/configure-tools.g"'""")
+
 
 
