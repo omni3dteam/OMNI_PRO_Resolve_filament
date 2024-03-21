@@ -125,13 +125,8 @@ def resolve_filament(original_tools, materials):
     res = command_connection.perform_simple_code("M1102")
     tray_state = json.loads(res)
     tools_tray_array = [tray_state['T0'], tray_state['T1'], tray_state['T2'], tray_state['T3']]
-    # Get current filaments loaded
-    # tools_rfid_array = []
-    # for i in range (0,4):
-    #     res = command_connection.perform_simple_code("M1002 S{}".format(i))
-    #     rfid_data = json.loads(res)
-    #     tools_rfid_array.append(rfid_data)
-    # All data gathered, now try to resolve tool number
+    
+    # try to resolve filaments
     new_tools = [-1,-1]
     tool_iterator = 0
     for tool in job_original_toolheads:
@@ -149,6 +144,17 @@ def resolve_filament(original_tools, materials):
                 print("No filament present for tool{}".format(tool))
                 new_tools[tool_iterator] = tool
         tool_iterator += 1
+    # ovverride resolving by user
+    if tools_tray_array[0] == 3:
+        new_tools[0] = 0
+    elif tools_tray_array[2] == 3:
+        new_tools[0] = 2
+    if new_tools[1] != -1:
+        if tools_tray_array[1] == 3:
+            new_tools[1] = 1
+        elif tools_tray_array[3] == 3:
+            new_tools[1] = 3
+
     return return_tools_as_string(new_tools)
 
 def create_full_file_path(file_path, filename):
@@ -226,6 +232,7 @@ def intercept_start_print_request():
         # Tray 0 command handling:
         if cde.type == CodeType.MCode and cde.majorNumber == 32:
             intercept_connection.resolve_code(MessageType.Success)
+            intercept_connection.close()
             filename = cde.parameters[0].string_value
             folder_path = "/opt/dsf/sd/gcodes/"
             file_path = create_full_file_path(folder_path, filename)
@@ -235,7 +242,6 @@ def intercept_start_print_request():
             new_tools = resolve_filament(original_tools, materials)
             # new_tools = ["T0", "T2"]
             new_file = modify_job_file(folder_path, filename, return_tools_as_string(original_tools), new_tools)
-            intercept_connection.close()
             return new_file, new_tools
     except Exception as e:
         print("Closing connection: ", e)
@@ -244,17 +250,12 @@ def intercept_start_print_request():
 
 if __name__ == "__main__":
     #Configure everything on entry
-    subscribe_connection = SubscribeConnection(SubscriptionMode.FULL)
-    subscribe_connection.connect()
     previous_file = "none"
     tool_Value = ""
     os.system("sudo rm -rf /opt/dsf/sd/gcodes/tmp")
     os.system("mkdir /opt/dsf/sd/gcodes/tmp")
     os.system("sudo chown -R dsf:dsf /opt/dsf/sd/gcodes")
     os.system("sudo chmod 777 /opt/dsf/sd/gcodes/tmp")
-
-    # res = command_connection.perform_simple_code("G28 XY")
-    # command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t0.g"'"")
 
     while(True):
         # Wait for M32 to be sendt
@@ -278,8 +279,8 @@ if __name__ == "__main__":
                 # filament loaded
                 elif json.loads(filament_status)[tool] == 2:
                     tool_numeric_value = [int(i) for i in tool if i.isdigit()]
-                    message = "M1101 P{} S1".format(tool_numeric_value[0])
-                    command_connection.perform_simple_code(message)
+                    message = "M1101 P{} S1 A1".format(tool_numeric_value[0])
+                    res = command_connection.perform_simple_code(message)
                     time.sleep(30)
                     continue_print = True
                     pass
@@ -304,7 +305,29 @@ if __name__ == "__main__":
                         tool_Value = tool[1]
                     else:
                         pass
-                    time.sleep(1)
+                    time.sleep(5)
+
+                time.sleep(1)
+
+                subscribe_connection = SubscribeConnection(SubscriptionMode.FULL)
+                subscribe_connection.connect()
+
+                object_model = subscribe_connection.get_object_model()
+                z_position = object_model.move.axes[2].machine_position
+
+                command_connection.perform_simple_code("G28 XY")
+
+                if z_position < 150.0:
+                    command_connection.perform_simple_code("G90")
+                    command_connection.perform_simple_code("G0 Z250 F1500")
+                else:
+                    command_connection.perform_simple_code("G91")
+                    command_connection.perform_simple_code("G1 Z100 F1500")
+                command_connection.perform_simple_code("G90")
+
+                command_connection.perform_simple_code("M106 P0 S0")
+                command_connection.perform_simple_code("M106 P0 S0")
+
                 command_connection.perform_simple_code("T1")
                 command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/goto-clean-t1.g"'"")
                 command_connection.perform_simple_code("M98 P"'"/sys/machine-specific/clean.g"'"")
@@ -318,6 +341,4 @@ if __name__ == "__main__":
                 command_connection.perform_simple_code("M42 P11 S0")
 
                 command_connection.perform_simple_code("""M98 P"'/sys/configure-tools.g"'""")
-
-
 
