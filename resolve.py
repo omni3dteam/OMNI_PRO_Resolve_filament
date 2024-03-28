@@ -73,7 +73,7 @@ def get_data_from_cura_gcode(file_path):
 def get_data_from_gcode(file_path):
      with open(file_path) as f:
         lines = f.readlines()
-        if lines[0] == ";FLAVOR:RepRap\n":
+        if lines[0] == ";flavor:reprap\n":
             return get_data_from_cura_gcode(file_path)
         else:
             return get_data_from_default_slicer(file_path)
@@ -213,14 +213,14 @@ def modify_job_file(file_path, filename, tool_to_change, new_tool):
         return tmp_filename
     except Exception as e:
         print(e)
-def is_it_print_again_file(file_path):
-    f = file_path.split('/')
-    if f[-1].endswith('.gcode'):
-        f[-1] = f[-1][:-6]
-    if f[-1].find("_tmp") != -1:
-        return True
-    else:
-        return False
+# def is_it_print_again_file(file_path):
+#     f = file_path.split('/')
+#     if f[-1].endswith('.gcode'):
+#         f[-1] = f[-1][:-6]
+#     if f[-1].find("_tmp") != -1:
+#         return True
+#     else:
+#         return False
 
 def intercept_start_print_request():
     filters = ["M32"]
